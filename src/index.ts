@@ -94,7 +94,7 @@ export async function fetchOpenRouterReasoning(
   fetchImpl: typeof fetch = fetch,
 ): Promise<Map<string, ReasoningMetadata>> {
   const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), 30_000)
+  const timer = setTimeout(() => controller.abort(), 300_000)
   try {
     const response = await fetchImpl(url, {
       headers: { accept: 'application/json' },
