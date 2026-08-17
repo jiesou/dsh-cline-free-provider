@@ -225,7 +225,7 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
           provider: PROVIDER,
           displayName: 'Cline',
           apiKeyEnv: credentialRef(opts.apiKeyEnv ?? 'CLINE_API_KEY'),
-          streamIdleTimeoutMs: 3_000,
+          streamIdleTimeoutMs: 300_000,
           retryPolicy: resolveRetryPolicy(undefined, 'cline-free-provider'),
           piProvider,
           configuredMaxTokens: new Map(),
