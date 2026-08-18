@@ -128,13 +128,17 @@ export async function fetchOpenRouterReasoning(
 
 export function reasoningMapFor(reasoning: ReasoningMetadata | undefined): ThinkingLevelMap {
   if (reasoning === undefined) {
-    return { off: 'none' }
+    return {}
   }
   const canOff = reasoning.mandatory !== true
   const map: ThinkingLevelMap = {}
   for (const level of ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as ModelThinkingLevel[]) {
     if (level === 'off') {
-      map.off = canOff ? 'none' : null
+      // `off` is deliberately left unset (not 'none') for toggleable models: with no
+      // effort selected the transport then omits `reasoning_effort` entirely instead of
+      // forcing 'none' (which would disable thinking or error on mandatory-reasoning
+      // models). Mandatory models simply don't offer "off".
+      map.off = canOff ? undefined : null
       continue
     }
     const supported = reasoning.supportedEfforts?.includes(level) ?? false
