@@ -5,7 +5,7 @@ import { credentialRef } from '@deepseek-ai/dsh-credentials'
 import { launchEnvironmentOf } from '@deepseek-ai/dsh-launch-environment'
 import { installSettingsSection, settingsNamespace } from '@deepseek-ai/dsh-settings'
 import z from '@deepseek-ai/schemastery'
-import { createProvider, type Context as PiContext, type Model, type ModelThinkingLevel, type ProviderStreams, type ThinkingLevelMap } from '@earendil-works/pi-ai'
+import { createProvider, type Api, type Context as PiContext, type Model, type ProviderStreams, type ThinkingLevelMap } from '@earendil-works/pi-ai'
 import { openAICompletionsApi } from '@earendil-works/pi-ai/api/openai-completions.lazy'
 
 export const name = 'cline-free-provider'
@@ -49,81 +49,72 @@ function positiveNumber(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : undefined
 }
 
-export async function fetchFreeModels(
-  url: string = 'https://api.cline.bot/api/v1/ai/cline/models',
-  fetchImpl: typeof fetch = fetch,
-): Promise<ClineModel[]> {
+async function fetchJson(url: string, timeoutMs: number, label: string, fetchImpl: typeof fetch = fetch): Promise<unknown> {
   const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), 30_000)
+  const timer = setTimeout(() => controller.abort(), timeoutMs)
   try {
     const response = await fetchImpl(url, {
       headers: { accept: 'application/json' },
       signal: controller.signal,
     })
     if (!response.ok) {
-      throw new Error(`Cline models endpoint answered HTTP ${response.status}`)
+      throw new Error(`${label} endpoint answered HTTP ${response.status}`)
     }
-    const payload: unknown = await response.json()
-    if (!isRecord(payload) || !Array.isArray(payload.data)) {
-      throw new Error('Cline models endpoint returned an unexpected shape')
-    }
-    const models: ClineModel[] = []
-    for (const raw of payload.data) {
-      if (!isRecord(raw) || typeof raw.id !== 'string') continue
-      const extraName = raw.id === 'deepseek/deepseek-v4-flash' ? 'DeepSeek V4 Flash (free)' : undefined
-      if (!raw.id.endsWith(':free') && extraName === undefined) continue
-      const name = extraName ?? (typeof raw.name === 'string' && raw.name.length > 0 ? raw.name : undefined)
-      const contextWindow = positiveNumber(raw.context_length)
-      const maxTokens = positiveNumber(isRecord(raw.top_provider) ? raw.top_provider.max_completion_tokens : undefined)
-      models.push({
-        id: raw.id,
-        ...(name === undefined ? {} : { name }),
-        ...(contextWindow === undefined ? {} : { contextWindow }),
-        ...maxTokens === undefined ? {} : { maxTokens },
-      })
-    }
-    models.sort((a, b) => a.id.localeCompare(b.id))
-    return models
+    return await response.json()
   } finally {
     clearTimeout(timer)
   }
+}
+
+export async function fetchFreeModels(
+  url: string = 'https://api.cline.bot/api/v1/ai/cline/models',
+  fetchImpl: typeof fetch = fetch,
+): Promise<ClineModel[]> {
+  const payload = await fetchJson(url, 30_000, 'Cline models', fetchImpl)
+  if (!isRecord(payload) || !Array.isArray(payload.data)) {
+    throw new Error('Cline models endpoint returned an unexpected shape')
+  }
+  const models: ClineModel[] = []
+  for (const raw of payload.data) {
+    if (!isRecord(raw) || typeof raw.id !== 'string') continue
+    const extraName = raw.id === 'deepseek/deepseek-v4-flash' ? 'DeepSeek V4 Flash (free)' : undefined
+    if (!raw.id.endsWith(':free') && extraName === undefined) continue
+    const name = extraName ?? (typeof raw.name === 'string' && raw.name.length > 0 ? raw.name : undefined)
+    const contextWindow = positiveNumber(raw.context_length)
+    const maxTokens = positiveNumber(isRecord(raw.top_provider) ? raw.top_provider.max_completion_tokens : undefined)
+    models.push({
+      id: raw.id,
+      ...(name === undefined ? {} : { name }),
+      ...(contextWindow === undefined ? {} : { contextWindow }),
+      ...maxTokens === undefined ? {} : { maxTokens },
+    })
+  }
+  models.sort((a, b) => a.id.localeCompare(b.id))
+  return models
 }
 
 export async function fetchOpenRouterReasoning(
   url: string = 'https://openrouter.ai/api/v1/models',
   fetchImpl: typeof fetch = fetch,
 ): Promise<Map<string, ReasoningMetadata>> {
-  const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), 300_000)
-  try {
-    const response = await fetchImpl(url, {
-      headers: { accept: 'application/json' },
-      signal: controller.signal,
-    })
-    if (!response.ok) {
-      throw new Error(`OpenRouter models endpoint answered HTTP ${response.status}`)
-    }
-    const payload: unknown = await response.json()
-    if (!isRecord(payload) || !Array.isArray(payload.data)) {
-      throw new Error('OpenRouter models endpoint returned an unexpected shape')
-    }
-    const byId = new Map<string, ReasoningMetadata>()
-    for (const raw of payload.data) {
-      if (!isRecord(raw) || typeof raw.id !== 'string') continue
-      const r = isRecord(raw.reasoning) ? raw.reasoning : undefined
-      if (r === undefined) continue
-      const efforts = Array.isArray(r.supported_efforts)
-        ? (r.supported_efforts as unknown[]).filter((x): x is string => typeof x === 'string')
-        : undefined
-      byId.set(raw.id, {
-        ...(efforts === undefined || efforts.length === 0 ? {} : { supportedEfforts: efforts }),
-        ...typeof r.mandatory === 'boolean' ? { mandatory: r.mandatory } : {},
-      })
-    }
-    return byId
-  } finally {
-    clearTimeout(timer)
+  const payload = await fetchJson(url, 300_000, 'OpenRouter models', fetchImpl)
+  if (!isRecord(payload) || !Array.isArray(payload.data)) {
+    throw new Error('OpenRouter models endpoint returned an unexpected shape')
   }
+  const byId = new Map<string, ReasoningMetadata>()
+  for (const raw of payload.data) {
+    if (!isRecord(raw) || typeof raw.id !== 'string') continue
+    const r = isRecord(raw.reasoning) ? raw.reasoning : undefined
+    if (r === undefined) continue
+    const efforts = Array.isArray(r.supported_efforts)
+      ? (r.supported_efforts as unknown[]).filter((x): x is string => typeof x === 'string')
+      : undefined
+    byId.set(raw.id, {
+      ...(efforts === undefined || efforts.length === 0 ? {} : { supportedEfforts: efforts }),
+      ...typeof r.mandatory === 'boolean' ? { mandatory: r.mandatory } : {},
+    })
+  }
+  return byId
 }
 
 export function reasoningMapFor(reasoning: ReasoningMetadata | undefined): ThinkingLevelMap {
@@ -132,18 +123,14 @@ export function reasoningMapFor(reasoning: ReasoningMetadata | undefined): Think
   }
   const canOff = reasoning.mandatory !== true
   const map: ThinkingLevelMap = {}
-  for (const level of ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as ModelThinkingLevel[]) {
-    if (level === 'off') {
-      // `off` is deliberately left unset (not 'none') for toggleable models: with no
-      // effort selected the transport then omits `reasoning_effort` entirely instead of
-      // forcing 'none' (which would disable thinking or error on mandatory-reasoning
-      // models). Mandatory models simply don't offer "off".
-      map.off = canOff ? undefined : null
-      continue
+  map.off = canOff ? undefined : null
+  for (const level of ['minimal', 'low', 'medium', 'high'] as const) {
+    if (reasoning.supportedEfforts !== undefined && !reasoning.supportedEfforts.includes(level)) {
+      map[level] = null
     }
-    const supported = reasoning.supportedEfforts?.includes(level) ?? false
-    const allUp = reasoning.supportedEfforts === undefined
-    map[level] = supported || allUp ? level : null
+  }
+  for (const level of ['xhigh', 'max'] as const) {
+    map[level] = reasoning.supportedEfforts === undefined || reasoning.supportedEfforts.includes(level) ? level : null
   }
   return map
 }
@@ -178,7 +165,7 @@ function toPiModel(model: ClineModel, baseURL: string, config: Config): Model<'o
   }
 }
 
-const normalizeReasoningContext = (model: Model<'openai-completions'>, context: PiContext): PiContext => {
+const normalizeReasoningContext = (model: Model<Api>, context: PiContext): PiContext => {
   if (!model.reasoning) return context
   const messages = context.messages.map(message => {
     if (message.role !== 'assistant') return message
@@ -192,8 +179,16 @@ const normalizeReasoningContext = (model: Model<'openai-completions'>, context: 
   return messages.some((message, index) => message !== context.messages[index]) ? { ...context, messages } : context
 }
 
+const baseApi = openAICompletionsApi()
+const api: ProviderStreams = {
+  stream: (model, context, options) => baseApi.stream(model, normalizeReasoningContext(model, context), options),
+  streamSimple: (model, context, options) => baseApi.streamSimple(model, normalizeReasoningContext(model, context), options),
+}
+
 export async function apply(ctx: Context, config: Config): Promise<void> {
   let current: () => Config = () => config
+  let lastConfig: Config | undefined
+  let memoized: ReadonlyMap<string, ResolvedPiAiProviderProfile> | undefined
 
   const [entries, reasoningById] = await Promise.all([
     fetchFreeModels(),
@@ -219,13 +214,9 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
 
   const buildProfiles = (): ReadonlyMap<string, ResolvedPiAiProviderProfile> => {
     const opts = current()
+    if (opts === lastConfig && memoized !== undefined) return memoized
     const baseURL = opts.baseURL ?? 'https://api.cline.bot/api/v1'
     const models = scanned.map(model => toPiModel(model, baseURL, opts))
-    const baseApi = openAICompletionsApi()
-    const api: ProviderStreams = {
-      stream: (model, context, options) => baseApi.stream(model as unknown as Model<'openai-completions'>, normalizeReasoningContext(model as unknown as Model<'openai-completions'>, context), options),
-      streamSimple: (model, context, options) => baseApi.streamSimple(model as unknown as Model<'openai-completions'>, normalizeReasoningContext(model as unknown as Model<'openai-completions'>, context), options),
-    }
     const piProvider = createProvider({
       id: PROVIDER,
       name: 'Cline',
@@ -242,7 +233,7 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
       models,
       api,
     })
-    return new Map<string, ResolvedPiAiProviderProfile>([
+    const profiles = new Map<string, ResolvedPiAiProviderProfile>([
       [
         PROVIDER,
         {
@@ -257,6 +248,9 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
         },
       ],
     ])
+    lastConfig = opts
+    memoized = profiles
+    return profiles
   }
 
   const adapter = new PiAiAdapter({
