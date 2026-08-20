@@ -5,7 +5,7 @@ import { credentialRef } from '@deepseek-ai/dsh-credentials'
 import { launchEnvironmentOf } from '@deepseek-ai/dsh-launch-environment'
 import { installSettingsSection, settingsNamespace } from '@deepseek-ai/dsh-settings'
 import z from '@deepseek-ai/schemastery'
-import { createProvider, type Model, type ModelThinkingLevel, type ThinkingLevelMap } from '@earendil-works/pi-ai'
+import { createProvider, type Context as PiContext, type Model, type ModelThinkingLevel, type ProviderStreams, type ThinkingLevelMap } from '@earendil-works/pi-ai'
 import { openAICompletionsApi } from '@earendil-works/pi-ai/api/openai-completions.lazy'
 
 export const name = 'cline-free-provider'
@@ -171,11 +171,25 @@ function toPiModel(model: ClineModel, baseURL: string, config: Config): Model<'o
     reasoning: !hideControl && r !== undefined,
     input: ['text'],
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-    compat: { requiresReasoningContentOnAssistantMessages: true },
+    compat: { requiresReasoningContentOnAssistantMessages: false },
     contextWindow: model.contextWindow ?? config.defaultContextWindow ?? 262_144,
     maxTokens: model.maxTokens ?? config.defaultMaxTokens ?? 32_768,
     ...(r !== undefined && !hideControl ? { thinkingLevelMap: reasoningMapFor(r) } : {}),
   }
+}
+
+const normalizeReasoningContext = (model: Model<'openai-completions'>, context: PiContext): PiContext => {
+  if (!model.reasoning) return context
+  const messages = context.messages.map(message => {
+    if (message.role !== 'assistant') return message
+    const content = message.content.map(block =>
+      block.type === 'thinking' && block.thinking.trim().length > 0 && block.thinkingSignature === undefined
+        ? { ...block, thinkingSignature: 'reasoning_content' }
+        : block,
+    )
+    return content === message.content ? message : { ...message, content }
+  })
+  return messages.some((message, index) => message !== context.messages[index]) ? { ...context, messages } : context
 }
 
 export async function apply(ctx: Context, config: Config): Promise<void> {
@@ -207,6 +221,11 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
     const opts = current()
     const baseURL = opts.baseURL ?? 'https://api.cline.bot/api/v1'
     const models = scanned.map(model => toPiModel(model, baseURL, opts))
+    const baseApi = openAICompletionsApi()
+    const api: ProviderStreams = {
+      stream: (model, context, options) => baseApi.stream(model as unknown as Model<'openai-completions'>, normalizeReasoningContext(model as unknown as Model<'openai-completions'>, context), options),
+      streamSimple: (model, context, options) => baseApi.streamSimple(model as unknown as Model<'openai-completions'>, normalizeReasoningContext(model as unknown as Model<'openai-completions'>, context), options),
+    }
     const piProvider = createProvider({
       id: PROVIDER,
       name: 'Cline',
@@ -221,7 +240,7 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
         },
       },
       models,
-      api: openAICompletionsApi(),
+      api,
     })
     return new Map<string, ResolvedPiAiProviderProfile>([
       [
