@@ -1,5 +1,6 @@
 import type { Context } from '@deepseek-ai/cordis'
-import { LlmError, assertUsableApiKey, resolveRetryPolicy } from '@deepseek-ai/dsh-llm'
+import { LlmError, assertUsableApiKey, resolveRetryPolicy, RetryPolicySchema } from '@deepseek-ai/dsh-llm'
+import type { RetryPolicyConfig } from '@deepseek-ai/dsh-llm'
 import { PiAiAdapter, type ResolvedPiAiProviderProfile } from '@deepseek-ai/dsh-llm-pi-ai'
 import { credentialRef } from '@deepseek-ai/dsh-credentials'
 import { launchEnvironmentOf } from '@deepseek-ai/dsh-launch-environment'
@@ -32,6 +33,8 @@ export interface Config {
   baseURL?: string
   defaultMaxTokens?: number
   defaultContextWindow?: number
+  /** Provider-owned model-request retry policy; omission uses normal defaults. */
+  retryPolicy?: RetryPolicyConfig
 }
 
 export const Config: z<Config> = z.object({
@@ -39,6 +42,7 @@ export const Config: z<Config> = z.object({
   baseURL: z.string().default('https://api.cline.bot/api/v1'),
   defaultMaxTokens: z.number().step(1).min(1).default(32_768),
   defaultContextWindow: z.number().step(1).min(1).default(262_144),
+  retryPolicy: RetryPolicySchema,
 })
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -242,7 +246,7 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
           apiKeyEnv: credentialRef(opts.apiKeyEnv ?? 'CLINE_API_KEY'),
           streamIdleTimeoutMs: 300_000,
           maxRequestImageBytes: 20_971_520,
-          retryPolicy: resolveRetryPolicy(undefined, 'cline-free-provider'),
+          retryPolicy: resolveRetryPolicy(opts.retryPolicy, 'cline-free-provider: retryPolicy'),
           piProvider,
           configuredMaxTokens: new Map(),
         },

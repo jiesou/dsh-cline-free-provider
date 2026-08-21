@@ -1,4 +1,5 @@
 import type { Context } from '@deepseek-ai/cordis';
+import type { RetryPolicyConfig } from '@deepseek-ai/dsh-llm';
 import z from '@deepseek-ai/schemastery';
 import { type ThinkingLevelMap } from '@earendil-works/pi-ai';
 export declare const name = "cline-free-provider";
@@ -19,6 +20,8 @@ export interface Config {
     baseURL?: string;
     defaultMaxTokens?: number;
     defaultContextWindow?: number;
+    /** Provider-owned model-request retry policy; omission uses normal defaults. */
+    retryPolicy?: RetryPolicyConfig;
 }
 export declare const Config: z<Config>;
 export declare function fetchFreeModels(url?: string, fetchImpl?: typeof fetch): Promise<ClineModel[]>;
