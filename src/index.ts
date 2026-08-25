@@ -6,8 +6,10 @@ import { credentialRef } from '@deepseek-ai/dsh-credentials'
 import { launchEnvironmentOf } from '@deepseek-ai/dsh-launch-environment'
 import { installSettingsSection, settingsNamespace } from '@deepseek-ai/dsh-settings'
 import z from '@deepseek-ai/schemastery'
-import { createProvider, type Api, type Context as PiContext, type Model, type ProviderStreams, type ThinkingLevelMap } from '@earendil-works/pi-ai'
+import { createProvider, type Api, type AuthContext, type Context as PiContext, type CredentialStore, type Model, type ProviderStreams, type ThinkingLevelMap } from '@earendil-works/pi-ai'
 import { openAICompletionsApi } from '@earendil-works/pi-ai/api/openai-completions.lazy'
+import { access } from 'node:fs/promises'
+import { homedir } from 'node:os'
 
 export const name = 'cline-free-provider'
 export const inject = ['llm', 'settings']
@@ -246,6 +248,8 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
           apiKeyEnv: credentialRef(opts.apiKeyEnv ?? 'CLINE_API_KEY'),
           streamIdleTimeoutMs: 300_000,
           maxRequestImageBytes: 20_971_520,
+          requestImagePixelBudget: 4_194_304,
+          requestImageMaxBytes: 1_048_576,
           retryPolicy: resolveRetryPolicy(opts.retryPolicy, 'cline-free-provider: retryPolicy'),
           piProvider,
           configuredMaxTokens: new Map(),
@@ -257,8 +261,51 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
     return profiles
   }
 
+  const resolveSecretValue = async (envName: string): Promise<string | undefined> => {
+    const credentials = ctx.get('credentials')
+    if (credentials !== undefined) {
+      const hit = await credentials.resolve(credentialRef(envName))
+      if (hit !== undefined && hit.value.trim().length > 0) return hit.value.trim()
+    }
+    const ambient = launchEnvironmentOf(ctx).get(envName)
+    if (ambient !== undefined && ambient.value.trim().length > 0) return ambient.value.trim()
+    return undefined
+  }
+
+  const piAuth = (): { credentials: CredentialStore, authContext: AuthContext } => ({
+    credentials: {
+      async read() {
+        return undefined
+      },
+      async list() {
+        return []
+      },
+      async modify(_providerId, mutate) {
+        return mutate(undefined)
+      },
+      async delete() {},
+    },
+    authContext: {
+      async env(envName) {
+        return await resolveSecretValue(envName)
+      },
+      async fileExists(path) {
+        const expanded = path === '~' || path.startsWith('~/')
+          ? `${homedir()}/${path.slice(1).replace(/^\//, '')}`
+          : path
+        try {
+          await access(expanded)
+          return true
+        } catch {
+          return false
+        }
+      },
+    },
+  })
+
   const adapter = new PiAiAdapter({
     profiles: buildProfiles,
+    auth: piAuth(),
     resolveApiKey: async (provider, profile) => {
       const ref = profile.apiKeyEnv
       if (ref === undefined) return undefined
