@@ -6,6 +6,8 @@ export declare const inject: string[];
 interface ReasoningMetadata {
     /** Effort ids the OpenRouter secondary scan credits this model with. */
     supportedEfforts?: string[];
+    /** Upstream says thinking cannot be turned off on this model. */
+    mandatory?: boolean;
 }
 interface ClineModel {
     id: string;
