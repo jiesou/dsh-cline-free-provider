@@ -1,24 +1,28 @@
 import type { Context } from '@deepseek-ai/cordis'
-import { LlmError, assertUsableApiKey, resolveRetryPolicy, RetryPolicySchema } from '@deepseek-ai/dsh-llm'
+import { assertUsableApiKey, errorChain, LlmError, resolveRetryPolicy, RetryPolicySchema } from '@deepseek-ai/dsh-llm'
 import type { RetryPolicyConfig } from '@deepseek-ai/dsh-llm'
 import { PiAiAdapter, type ResolvedPiAiProviderProfile } from '@deepseek-ai/dsh-llm-pi-ai'
 import { credentialRef } from '@deepseek-ai/dsh-credentials'
 import { launchEnvironmentOf } from '@deepseek-ai/dsh-launch-environment'
-import { installSettingsSection, settingsNamespace } from '@deepseek-ai/dsh-settings'
+import { deepEqualJson, installSettingsSection, settingsNamespace } from '@deepseek-ai/dsh-settings'
 import z from '@deepseek-ai/schemastery'
-import { createProvider, type Api, type AuthContext, type Context as PiContext, type CredentialStore, type Model, type ProviderStreams, type ThinkingLevelMap } from '@earendil-works/pi-ai'
+import { createProvider, type AuthContext, type Context as PiContext, type CredentialStore, type Model, type ProviderStreams, type ThinkingLevelMap } from '@earendil-works/pi-ai'
 import { openAICompletionsApi } from '@earendil-works/pi-ai/api/openai-completions.lazy'
-import { access } from 'node:fs/promises'
-import { homedir } from 'node:os'
 
 export const name = 'cline-free-provider'
 export const inject = ['llm', 'settings']
 
 const NS = settingsNamespace('cline-free-provider')
 const PROVIDER = 'cline'
+const DISPLAY_NAME = 'Cline'
+
+/** Envelope types that must stay AUTH-classified instead of being rewritten. */
+const AUTH_ERROR_TYPES = new Set(['AuthError', 'authentication_error', 'invalid_api_key', 'unauthorized'])
 
 interface ReasoningMetadata {
+  /** Effort ids the OpenRouter secondary scan credits this model with. */
   supportedEfforts?: string[]
+  /** Upstream says thinking cannot be turned off on this model. */
   mandatory?: boolean
 }
 
@@ -27,6 +31,9 @@ interface ClineModel {
   name?: string
   contextWindow?: number
   maxTokens?: number
+  /** Whether the Cline feed lists `reasoning_effort` among its `supported_parameters`. */
+  supportsReasoningEffort?: boolean
+  /** Optional ladder from the OpenRouter secondary scan (absent if that scan failed). */
   reasoning?: ReasoningMetadata
 }
 
@@ -56,20 +63,9 @@ function positiveNumber(value: unknown): number | undefined {
 }
 
 async function fetchJson(url: string, timeoutMs: number, label: string, fetchImpl: typeof fetch = fetch): Promise<unknown> {
-  const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), timeoutMs)
-  try {
-    const response = await fetchImpl(url, {
-      headers: { accept: 'application/json' },
-      signal: controller.signal,
-    })
-    if (!response.ok) {
-      throw new Error(`${label} endpoint answered HTTP ${response.status}`)
-    }
-    return await response.json()
-  } finally {
-    clearTimeout(timer)
-  }
+  const response = await fetchImpl(url, { headers: { accept: 'application/json' }, signal: AbortSignal.timeout(timeoutMs) })
+  if (!response.ok) throw new Error(`${label} endpoint answered HTTP ${response.status}`)
+  return await response.json()
 }
 
 export async function fetchFreeModels(
@@ -88,11 +84,15 @@ export async function fetchFreeModels(
     const name = extraName ?? (typeof raw.name === 'string' && raw.name.length > 0 ? raw.name : undefined)
     const contextWindow = positiveNumber(raw.context_length)
     const maxTokens = positiveNumber(isRecord(raw.top_provider) ? raw.top_provider.max_completion_tokens : undefined)
+    const supportedParameters = Array.isArray(raw.supported_parameters)
+      ? (raw.supported_parameters as unknown[]).filter((x): x is string => typeof x === 'string')
+      : undefined
     models.push({
       id: raw.id,
       ...(name === undefined ? {} : { name }),
       ...(contextWindow === undefined ? {} : { contextWindow }),
-      ...maxTokens === undefined ? {} : { maxTokens },
+      ...(maxTokens === undefined ? {} : { maxTokens }),
+      ...(supportedParameters?.includes('reasoning_effort') ? { supportsReasoningEffort: true } : {}),
     })
   }
   models.sort((a, b) => a.id.localeCompare(b.id))
@@ -115,114 +115,159 @@ export async function fetchOpenRouterReasoning(
     const efforts = Array.isArray(r.supported_efforts)
       ? (r.supported_efforts as unknown[]).filter((x): x is string => typeof x === 'string')
       : undefined
+    if (efforts === undefined || efforts.length === 0) continue
     byId.set(raw.id, {
-      ...(efforts === undefined || efforts.length === 0 ? {} : { supportedEfforts: efforts }),
+      supportedEfforts: efforts,
       ...typeof r.mandatory === 'boolean' ? { mandatory: r.mandatory } : {},
     })
   }
   return byId
 }
 
-export function reasoningMapFor(reasoning: ReasoningMetadata | undefined): ThinkingLevelMap {
-  if (reasoning === undefined) {
-    return {}
-  }
-  const canOff = reasoning.mandatory !== true
+// The Cline feed's `supported_parameters` asserts controllability, OpenRouter's
+// scan supplies the ladder. Either one missing means no effort control at all —
+// never a fabricated ladder.
+function reasoningLevelsFor(model: ClineModel): string[] {
+  if (!model.supportsReasoningEffort) return []
+  const efforts = model.reasoning?.supportedEfforts
+  if (efforts === undefined || efforts.length === 0) return []
+  return efforts
+}
+
+/** pi-ai's standard ladder keys (off = explicit close; the rest are depths). */
+const PI_LEVEL_KEYS = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as const
+
+// `Default` (the harness's "no selection" path) is the *absent key* — leaving
+// `reasoning_effort` off the wire and letting the upstream choose. Each ladder
+// level the endpoint accepts lands at its own key with its own wire value; the
+// `off` key carries the upstream's literal close value when the feed names one
+// (e.g. `none`), so the selector's "Off" entry is a real switch rather than a
+// no-op. Mandatory models omit the `off` key entirely — the harness then has
+// no way to disable thinking.
+function reasoningMapFor(levels: readonly string[], mandatory: boolean | undefined): ThinkingLevelMap {
   const map: ThinkingLevelMap = {}
-  map.off = canOff ? undefined : null
-  for (const level of ['minimal', 'low', 'medium', 'high'] as const) {
-    if (reasoning.supportedEfforts !== undefined && !reasoning.supportedEfforts.includes(level)) {
-      map[level] = null
-    }
+  for (const key of PI_LEVEL_KEYS) {
+    if (levels.includes(key)) map[key] = key
   }
-  for (const level of ['xhigh', 'max'] as const) {
-    map[level] = reasoning.supportedEfforts === undefined || reasoning.supportedEfforts.includes(level) ? level : null
+  if (!mandatory) {
+    const closeValue = levels.includes('none') ? 'none' : 'off'
+    map.off = closeValue
   }
   return map
 }
 
-function toPiModel(model: ClineModel, baseURL: string, config: Config): Model<'openai-completions'> {
-  const r = model.reasoning
-  const hideControl = r !== undefined && r.mandatory && !r.supportedEfforts
-  return {
-    id: model.id,
-    name: model.name ?? model.id,
-    api: 'openai-completions',
-    provider: PROVIDER,
-    baseUrl: baseURL,
-    headers: {
-      'User-Agent': 'Cline/3.0.47',
-      'HTTP-Referer': 'https://cline.bot',
-      'X-Title': 'Cline',
-      'X-IS-MULTIROOT': 'false',
-      'X-CLIENT-TYPE': 'cline-sdk',
-      'X-CLIENT-VERSION': '3.0.47',
-      'X-PLATFORM': 'terminal',
-      'X-PLATFORM-VERSION': '3.0.47',
-      'X-CORE-VERSION': '0.0.66',
-    },
-    reasoning: !hideControl && r !== undefined,
-    input: ['text'],
-    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-    compat: { requiresReasoningContentOnAssistantMessages: false },
-    contextWindow: model.contextWindow ?? config.defaultContextWindow ?? 262_144,
-    maxTokens: model.maxTokens ?? config.defaultMaxTokens ?? 32_768,
-    ...(r !== undefined && !hideControl ? { thinkingLevelMap: reasoningMapFor(r) } : {}),
-  }
+function buildModels(scanned: readonly ClineModel[], baseURL: string, config: Config): Model<'openai-completions'>[] {
+  return scanned.map(model => {
+    const levels = reasoningLevelsFor(model)
+    const mandatory = model.reasoning?.mandatory
+    const controllable = levels.length > 0
+    return {
+      id: model.id,
+      name: model.name ?? model.id,
+      api: 'openai-completions',
+      provider: PROVIDER,
+      baseUrl: baseURL,
+      headers: {
+        'User-Agent': 'Cline/3.0.47',
+        'HTTP-Referer': 'https://cline.bot',
+        'X-Title': 'Cline',
+        'X-IS-MULTIROOT': 'false',
+        'X-CLIENT-TYPE': 'cline-sdk',
+        'X-CLIENT-VERSION': '3.0.47',
+        'X-PLATFORM': 'terminal',
+        'X-PLATFORM-VERSION': '3.0.47',
+        'X-CORE-VERSION': '0.0.66',
+      },
+      reasoning: controllable,
+      input: ['text'],
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      compat: { requiresReasoningContentOnAssistantMessages: false },
+      contextWindow: model.contextWindow ?? config.defaultContextWindow ?? 262_144,
+      maxTokens: model.maxTokens ?? config.defaultMaxTokens ?? 32_768,
+      ...(controllable ? { thinkingLevelMap: reasoningMapFor(levels, mandatory) } : {}),
+    }
+  })
 }
 
-const normalizeReasoningContext = (model: Model<Api>, context: PiContext): PiContext => {
-  if (!model.reasoning) return context
-  const messages = context.messages.map(message => {
-    if (message.role !== 'assistant') return message
-    const content = message.content.map(block =>
+// Replayed thinking blocks carry no wire signature; marking them
+// `reasoning_content` keeps the transport from mangling history. Never gated on
+// `model.reasoning`: a model with no effort control still streams thinking.
+const normalizeReasoningContext = (context: PiContext): PiContext => ({
+  ...context,
+  messages: context.messages.map(message => message.role !== 'assistant' ? message : {
+    ...message,
+    content: message.content.map(block =>
       block.type === 'thinking' && block.thinking.trim().length > 0 && block.thinkingSignature === undefined
         ? { ...block, thinkingSignature: 'reasoning_content' }
-        : block,
-    )
-    return content === message.content ? message : { ...message, content }
-  })
-  return messages.some((message, index) => message !== context.messages[index]) ? { ...context, messages } : context
+        : block),
+  }),
+})
+
+// Free-tier refusals (ended promotions, region blocks) arrive as HTTP 401/403,
+// which the harness classifies as AUTH and masks as "API key is invalid".
+// Rewriting the envelope to `[cline <type>] <message>` gets the real reason past
+// that classification; genuine auth envelopes and unparseable text pass through.
+const rewriteRefusalMessage = (errorMessage: string): string => {
+  const start = errorMessage.indexOf('{')
+  const end = errorMessage.lastIndexOf('}')
+  if (start < 0 || end <= start) return errorMessage
+  let parsed: unknown
+  try { parsed = JSON.parse(errorMessage.slice(start, end + 1)) } catch { return errorMessage }
+  if (!isRecord(parsed)) return errorMessage
+  // Accept both the raw envelope (`{"type":"error","error":{…}}`) and the
+  // SDK-unwrapped inner object (`{"type":"ModelError","message":"…"}`).
+  const detail = parsed.type === 'error' && isRecord(parsed.error) ? parsed.error : parsed
+  const message = [detail.message, isRecord(detail.error) ? detail.error.message : undefined, detail.detail]
+    .find((value): value is string => typeof value === 'string')
+  if (message === undefined) return errorMessage
+  const type = typeof detail.type === 'string' ? detail.type : 'Error'
+  const code = typeof detail.code === 'string' ? detail.code : ''
+  if (AUTH_ERROR_TYPES.has(type) || AUTH_ERROR_TYPES.has(code)) return errorMessage
+  // Dropping the status prefix is what defeats the AUTH classifier.
+  return `[cline ${type}] ${message}`
+}
+
+// Required by the adapter, unused by this route: the credential comes from
+// `resolveApiKey`, so pi-ai never stores one nor asks an ambient question.
+const PI_AUTH: { credentials: CredentialStore, authContext: AuthContext } = {
+  credentials: {
+    read: async () => undefined,
+    list: async () => [],
+    modify: async (_providerId, mutate) => mutate(undefined),
+    delete: async () => {},
+  },
+  authContext: { env: async () => undefined, fileExists: async () => false },
+}
+
+const sanitizeStream = <S extends { push(event: unknown): void }>(stream: S): S => {
+  const originalPush = stream.push.bind(stream)
+  stream.push = (event: unknown) => {
+    if (isRecord(event) && event.type === 'error' && isRecord(event.error) && typeof event.error.errorMessage === 'string') {
+      event.error.errorMessage = rewriteRefusalMessage(event.error.errorMessage)
+    }
+    originalPush(event)
+  }
+  return stream
 }
 
 const baseApi = openAICompletionsApi()
 const api: ProviderStreams = {
-  stream: (model, context, options) => baseApi.stream(model, normalizeReasoningContext(model, context), options),
-  streamSimple: (model, context, options) => baseApi.streamSimple(model, normalizeReasoningContext(model, context), options),
+  stream: (model, context, options) =>
+    sanitizeStream(baseApi.stream(model, normalizeReasoningContext(context), options)),
+  streamSimple: (model, context, options) =>
+    sanitizeStream(baseApi.streamSimple(model, normalizeReasoningContext(context), options)),
 }
 
 export async function apply(ctx: Context, config: Config): Promise<void> {
   let current: () => Config = () => config
-  let lastConfig: Config | undefined
-  let memoized: ReadonlyMap<string, ResolvedPiAiProviderProfile> | undefined
 
-  const [entries, reasoningById] = await Promise.all([
-    fetchFreeModels(),
-    // Reasoning metadata is optional; a failed secondary scan must not disable models.
-    fetchOpenRouterReasoning().catch((error: unknown) => {
-      ctx.logger.warn('[cline-free-provider] OpenRouter reasoning scan failed; falling back to Cline-only metadata: %s',
-        error instanceof Error ? error.message : String(error))
-      return new Map<string, ReasoningMetadata>()
-    }),
-  ])
-  if (entries.length === 0) {
-    throw new Error('no free models found; keeping the previous catalog')
-  }
-  const scanned = entries.map(entry => ({
-    ...entry,
-    ...(reasoningById.has(entry.id) ? { reasoning: reasoningById.get(entry.id) } : {}),
-  }))
-  ctx.logger.info(
-    '[cline-free-provider] synced %d free model(s): %s',
-    scanned.length,
-    scanned.map(m => m.id).join(', '),
-  )
+  // Outside the settings-backed config, so a settings snapshot cannot clobber a
+  // scan.
+  let scanned: ClineModel[] = []
 
   const buildProfiles = (): ReadonlyMap<string, ResolvedPiAiProviderProfile> => {
     const opts = current()
-    if (opts === lastConfig && memoized !== undefined) return memoized
     const baseURL = opts.baseURL ?? 'https://api.cline.bot/api/v1'
-    const models = scanned.map(model => toPiModel(model, baseURL, opts))
     const piProvider = createProvider({
       id: PROVIDER,
       name: 'Cline',
@@ -236,7 +281,7 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
           }),
         },
       },
-      models,
+      models: buildModels(scanned, baseURL, opts),
       api,
     })
     const profiles = new Map<string, ResolvedPiAiProviderProfile>([
@@ -244,7 +289,7 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
         PROVIDER,
         {
           provider: PROVIDER,
-          displayName: 'Cline',
+          displayName: DISPLAY_NAME,
           apiKeyEnv: credentialRef(opts.apiKeyEnv ?? 'CLINE_API_KEY'),
           streamIdleTimeoutMs: 300_000,
           maxRequestImageBytes: 20_971_520,
@@ -256,56 +301,17 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
         },
       ],
     ])
-    lastConfig = opts
-    memoized = profiles
     return profiles
   }
 
-  const resolveSecretValue = async (envName: string): Promise<string | undefined> => {
-    const credentials = ctx.get('credentials')
-    if (credentials !== undefined) {
-      const hit = await credentials.resolve(credentialRef(envName))
-      if (hit !== undefined && hit.value.trim().length > 0) return hit.value.trim()
-    }
-    const ambient = launchEnvironmentOf(ctx).get(envName)
-    if (ambient !== undefined && ambient.value.trim().length > 0) return ambient.value.trim()
-    return undefined
-  }
-
-  const piAuth = (): { credentials: CredentialStore, authContext: AuthContext } => ({
-    credentials: {
-      async read() {
-        return undefined
-      },
-      async list() {
-        return []
-      },
-      async modify(_providerId, mutate) {
-        return mutate(undefined)
-      },
-      async delete() {},
-    },
-    authContext: {
-      async env(envName) {
-        return await resolveSecretValue(envName)
-      },
-      async fileExists(path) {
-        const expanded = path === '~' || path.startsWith('~/')
-          ? `${homedir()}/${path.slice(1).replace(/^\//, '')}`
-          : path
-        try {
-          await access(expanded)
-          return true
-        } catch {
-          return false
-        }
-      },
-    },
-  })
+  // PiAiAdapter memoizes its snapshot on this Map's identity, so a fresh Map per
+  // request would rebuild the whole pi-ai collection: rebuild only on change.
+  let profiles = buildProfiles()
 
   const adapter = new PiAiAdapter({
-    profiles: buildProfiles,
-    auth: piAuth(),
+    resolveAttachments: () => ctx.get('attachments'),
+    profiles: () => profiles,
+    auth: PI_AUTH,
     resolveApiKey: async (provider, profile) => {
       const ref = profile.apiKeyEnv
       if (ref === undefined) return undefined
@@ -328,7 +334,7 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
   })
 
   ctx.llm.registerConfigurableProviders([
-    { provider: PROVIDER, displayName: 'Cline', settingsNs: NS, settingsPath: [] },
+    { provider: PROVIDER, displayName: DISPLAY_NAME, settingsNs: NS, settingsPath: [] },
   ])
   ctx.llm.registerAdapter([PROVIDER], adapter)
 
@@ -336,6 +342,37 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
     setSource: (source) => {
       current = source
     },
-    onChange: () => {},
+    onChange: () => {
+      profiles = buildProfiles()
+    },
+  })
+
+  // The catalog is fetched once at mount. Mount never awaits it: an unreachable
+  // upstream must not kill the plugin.
+  async function sync(): Promise<void> {
+    const [entries, reasoningById] = await Promise.all([
+      fetchFreeModels(),
+      // Optional metadata: a failed secondary scan must not disable models.
+      fetchOpenRouterReasoning().catch((error: unknown) => {
+        ctx.logger.warn('[%s] OpenRouter reasoning scan failed; falling back to Cline-only metadata: %s',
+          name, errorChain(error))
+        return new Map<string, ReasoningMetadata>()
+      }),
+    ])
+    const next = entries.map(entry => ({
+      ...entry,
+      ...(reasoningById.has(entry.id) ? { reasoning: reasoningById.get(entry.id) } : {}),
+    }))
+    if (next.length === 0) {
+      throw new Error('no free models found; keeping the previous catalog')
+    }
+    if (deepEqualJson(next, scanned)) return
+    scanned = next
+    profiles = buildProfiles()
+    ctx.logger.info('[%s] synced %d free model(s): %s', name, scanned.length, scanned.map(m => m.id).join(', '))
+  }
+
+  void sync().catch((error: unknown) => {
+    ctx.logger.warn('[%s] initial catalog scan failed: %s', name, errorChain(error))
   })
 }

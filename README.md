@@ -55,6 +55,14 @@ Cline 的 API Key 通过 DSH credentials 服务保存（变量名为 `CLINE_API_
 | `defaultMaxTokens` | `number` | `32768` | 模型无精确 maxTokens 时的兜底值 |
 | `defaultContextWindow` | `number` | `262144` | 模型无精确 contextWindow 时的兜底值 |
 
+## 模型目录与推理档位
+
+插件在启动时拉一次免费模型目录，**不轮循**。上游轮换慢，一次抓取足矣。挂载时上游不可达也不挂——目录暂时为空、不会拖垮插件或模型界面。
+
+Reasoning effort：模型只暴露上游接受的档位，不造档位。**Default** 表示"不发送 `reasoning_effort`"字段，由上游自行决定深度。**Off** 是真开关——发送上游的关闭字面值（`none`、`off` 等）。上游标记为 mandatory 的模型干脆不显示 Off 选项，插件不替它伪造一个。
+
+错误提示：上游拒绝（已结束的免费推广、区域限制等）在终端错误事件里保留真实原因，不会被 harness 当 AUTH 吞掉。真正的鉴权失败仍按 AUTH 走，无法解析的内容原样透传。
+
 ## License
 
 [MIT](LICENSE)

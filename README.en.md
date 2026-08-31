@@ -51,6 +51,14 @@ All optional, defaults work out of the box:
 | `defaultMaxTokens` | `number` | `32768` | Output cap fallback for models without an exact value |
 | `defaultContextWindow` | `number` | `262144` | Context capacity fallback for models without an exact value |
 
+## Model catalog & reasoning effort
+
+The plugin fetches the free catalog once at startup and never re-scans — the upstream rotates slowly, and a static catalog is plenty. If the upstream is unreachable at mount the plugin still comes up (with an empty catalog); one network blip never takes the plugin, or the model surface, down.
+
+Reasoning effort: a model exposes exactly the levels the upstream feeds credit it with. **Default** means "do not send `reasoning_effort`" — the upstream picks its own depth. **Off** is a real switch: it sends the upstream's literal close value (`none`, `off`, …). Models the upstream marks mandatory drop the `Off` entry — there is no way to disable thinking, and the plugin doesn't fabricate one.
+
+Error reporting: upstream refusals (ended free promotions, region blocks, …) preserve the real reason in the terminal error event — the harness would otherwise mask them under "API key is invalid". Genuine auth failures still surface as AUTH.
+
 ## License
 
 [MIT](LICENSE)

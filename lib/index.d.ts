@@ -1,18 +1,20 @@
 import type { Context } from '@deepseek-ai/cordis';
 import type { RetryPolicyConfig } from '@deepseek-ai/dsh-llm';
 import z from '@deepseek-ai/schemastery';
-import { type ThinkingLevelMap } from '@earendil-works/pi-ai';
 export declare const name = "cline-free-provider";
 export declare const inject: string[];
 interface ReasoningMetadata {
+    /** Effort ids the OpenRouter secondary scan credits this model with. */
     supportedEfforts?: string[];
-    mandatory?: boolean;
 }
 interface ClineModel {
     id: string;
     name?: string;
     contextWindow?: number;
     maxTokens?: number;
+    /** Whether the Cline feed lists `reasoning_effort` among its `supported_parameters`. */
+    supportsReasoningEffort?: boolean;
+    /** Optional ladder from the OpenRouter secondary scan (absent if that scan failed). */
     reasoning?: ReasoningMetadata;
 }
 export interface Config {
@@ -26,6 +28,5 @@ export interface Config {
 export declare const Config: z<Config>;
 export declare function fetchFreeModels(url?: string, fetchImpl?: typeof fetch): Promise<ClineModel[]>;
 export declare function fetchOpenRouterReasoning(url?: string, fetchImpl?: typeof fetch): Promise<Map<string, ReasoningMetadata>>;
-export declare function reasoningMapFor(reasoning: ReasoningMetadata | undefined): ThinkingLevelMap;
 export declare function apply(ctx: Context, config: Config): Promise<void>;
 export {};
