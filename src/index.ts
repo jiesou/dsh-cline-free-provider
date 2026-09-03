@@ -33,6 +33,8 @@ interface ClineModel {
   maxTokens?: number
   /** Whether the Cline feed lists `reasoning_effort` among its `supported_parameters`. */
   supportsReasoningEffort?: boolean
+  /** Whether the feed's `architecture.input_modalities` names `image`. */
+  imageInput?: boolean
   /** Optional ladder from the OpenRouter secondary scan (absent if that scan failed). */
   reasoning?: ReasoningMetadata
 }
@@ -87,12 +89,16 @@ export async function fetchFreeModels(
     const supportedParameters = Array.isArray(raw.supported_parameters)
       ? (raw.supported_parameters as unknown[]).filter((x): x is string => typeof x === 'string')
       : undefined
+    const architecture = isRecord(raw.architecture) ? raw.architecture : undefined
+    const imageInput = architecture !== undefined && Array.isArray(architecture.input_modalities)
+      && (architecture.input_modalities as unknown[]).includes('image')
     models.push({
       id: raw.id,
       ...(name === undefined ? {} : { name }),
       ...(contextWindow === undefined ? {} : { contextWindow }),
       ...(maxTokens === undefined ? {} : { maxTokens }),
       ...(supportedParameters?.includes('reasoning_effort') ? { supportsReasoningEffort: true } : {}),
+      ...(imageInput ? { imageInput: true } : {}),
     })
   }
   models.sort((a, b) => a.id.localeCompare(b.id))
@@ -179,7 +185,11 @@ function buildModels(scanned: readonly ClineModel[], baseURL: string, config: Co
         'X-CORE-VERSION': '0.0.66',
       },
       reasoning: controllable,
-      input: ['text'],
+      // Declared from the feed's own `architecture.input_modalities`; a model
+      // the feed leaves silent stays text-only (under-claiming refuses the
+      // image while it is still cheap, over-claiming leaves a durable message
+      // no request can replay).
+      input: model.imageInput ? ['text', 'image'] : ['text'],
       cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
       compat: { requiresReasoningContentOnAssistantMessages: false },
       contextWindow: model.contextWindow ?? config.defaultContextWindow ?? 262_144,

@@ -16,6 +16,8 @@ interface ClineModel {
     maxTokens?: number;
     /** Whether the Cline feed lists `reasoning_effort` among its `supported_parameters`. */
     supportsReasoningEffort?: boolean;
+    /** Whether the feed's `architecture.input_modalities` names `image`. */
+    imageInput?: boolean;
     /** Optional ladder from the OpenRouter secondary scan (absent if that scan failed). */
     reasoning?: ReasoningMetadata;
 }
