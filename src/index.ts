@@ -4,15 +4,16 @@ import type { RetryPolicyConfig } from '@deepseek-ai/dsh-llm'
 import { PiAiAdapter, type ResolvedPiAiProviderProfile } from '@deepseek-ai/dsh-llm-pi-ai'
 import { credentialRef } from '@deepseek-ai/dsh-credentials'
 import { launchEnvironmentOf } from '@deepseek-ai/dsh-launch-environment'
-import { deepEqualJson, installSettingsSection, settingsNamespace } from '@deepseek-ai/dsh-settings'
+import { deepEqualJson } from '@deepseek-ai/dsh-util-values'
+import type {} from '@deepseek-ai/dsh-settings'
 import z from '@deepseek-ai/schemastery'
 import { createProvider, type AuthContext, type Context as PiContext, type CredentialStore, type Model, type ProviderStreams, type ThinkingLevelMap } from '@earendil-works/pi-ai'
 import { openAICompletionsApi } from '@earendil-works/pi-ai/api/openai-completions.lazy'
 
 export const name = 'cline-free-provider'
-export const inject = ['llm', 'settings']
+export const inject = ['llm']
 
-const NS = settingsNamespace('cline-free-provider')
+const NS = 'cline-free-provider'
 const PROVIDER = 'cline'
 const DISPLAY_NAME = 'Cline'
 
@@ -348,13 +349,15 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
   ])
   ctx.llm.registerAdapter([PROVIDER], adapter)
 
-  installSettingsSection(ctx, NS, Config, config, {
-    setSource: (source) => {
-      current = source
-    },
-    onChange: () => {
-      profiles = buildProfiles()
-    },
+  ctx.inject(['settings'], (settingsCtx) => {
+    settingsCtx.settings.installSection(ctx, NS, Config, config, {
+      setSource: (source) => {
+        current = source
+      },
+      onChange: () => {
+        profiles = buildProfiles()
+      },
+    })
   })
 
   // The catalog is fetched once at mount. Mount never awaits it: an unreachable
