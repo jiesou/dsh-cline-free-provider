@@ -1,6 +1,6 @@
 {
   "name": "@jiesou/dsh-cline-free-provider",
-  "version": "0.1.16",
+  "version": "0.1.17",
   "description": "Cline free models provider for dsh: scan the Cline model catalog dynamically and serve the :free models through the harness LLM seam",
   "type": "module",
   "main": "lib/index.js",
