@@ -8,7 +8,7 @@ Cline Free provider for dsh.
 
 <img height="650" alt="截图 2026-08-17 10-39-41" src="https://github.com/user-attachments/assets/849c8ca8-2f97-4603-898a-37598a2dede5" />
 
-Cline 提供 OpenRouter 上可用的各种免费模型，以及 DeepSeek V4 Flash。
+Cline 提供 OpenRouter 上可用的各种免费模型，以及 DeepSeek V4 Flash、GLM 5.3 Flash。
 
 如果你使用的是 Cline Pass 订阅计划，可以直接按照 Cline Pass 官方文档配置官方接口和 API Key，不需要本插件。
 

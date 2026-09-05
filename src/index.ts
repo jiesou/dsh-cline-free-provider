@@ -20,6 +20,11 @@ const DISPLAY_NAME = 'Cline'
 /** Envelope types that must stay AUTH-classified instead of being rewritten. */
 const AUTH_ERROR_TYPES = new Set(['AuthError', 'authentication_error', 'invalid_api_key', 'unauthorized'])
 
+const EXTRA_FREE_MODELS: Readonly<Record<string, string>> = {
+  'deepseek/deepseek-v4-flash': 'DeepSeek V4 Flash (free)',
+  'z-ai/glm-5.3-flash': 'GLM 5.3 Flash (free)',
+}
+
 interface ReasoningMetadata {
   /** Effort ids the OpenRouter secondary scan credits this model with. */
   supportedEfforts?: string[]
@@ -82,7 +87,7 @@ export async function fetchFreeModels(
   const models: ClineModel[] = []
   for (const raw of payload.data) {
     if (!isRecord(raw) || typeof raw.id !== 'string') continue
-    const extraName = raw.id === 'deepseek/deepseek-v4-flash' ? 'DeepSeek V4 Flash (free)' : undefined
+    const extraName = EXTRA_FREE_MODELS[raw.id]
     if (!raw.id.endsWith(':free') && extraName === undefined) continue
     const name = extraName ?? (typeof raw.name === 'string' && raw.name.length > 0 ? raw.name : undefined)
     const contextWindow = positiveNumber(raw.context_length)
@@ -154,12 +159,9 @@ const PI_LEVEL_KEYS = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as co
 function reasoningMapFor(levels: readonly string[], mandatory: boolean | undefined): ThinkingLevelMap {
   const map: ThinkingLevelMap = {}
   for (const key of PI_LEVEL_KEYS) {
-    if (levels.includes(key)) map[key] = key
+    map[key] = levels.includes(key) ? key : null
   }
-  if (!mandatory) {
-    const closeValue = levels.includes('none') ? 'none' : 'off'
-    map.off = closeValue
-  }
+  map.off = mandatory ? null : 'none'
   return map
 }
 
@@ -261,12 +263,50 @@ const sanitizeStream = <S extends { push(event: unknown): void }>(stream: S): S 
   return stream
 }
 
+const CLINE_VALID_EFFORTS = new Set(['max', 'xhigh', 'high', 'medium', 'low', 'minimal', 'none'])
+
+function sanitizePayload(params: Record<string, unknown>, explicitReasoning: unknown): void {
+  if (typeof params.reasoning_effort === 'string') {
+    if (explicitReasoning === undefined) {
+      delete params.reasoning_effort
+    } else if (params.reasoning_effort === 'off') {
+      params.reasoning_effort = 'none'
+    } else if (!CLINE_VALID_EFFORTS.has(params.reasoning_effort)) {
+      delete params.reasoning_effort
+    }
+  }
+}
+
+function withPayloadSanitization<T extends { onPayload?: (payload: unknown, model: Model<any>) => unknown }>(
+  options: T | undefined,
+  explicitReasoning: unknown,
+): T {
+  const customOnPayload = options?.onPayload
+  return {
+    ...options,
+    onPayload: async (params: unknown, model: Model<any>) => {
+      let current = params
+      if (customOnPayload) {
+        current = (await customOnPayload(params, model)) ?? params
+      }
+      if (isRecord(current)) {
+        sanitizePayload(current, explicitReasoning)
+      }
+      return current
+    },
+  } as T
+}
+
 const baseApi = openAICompletionsApi()
 const api: ProviderStreams = {
-  stream: (model, context, options) =>
-    sanitizeStream(baseApi.stream(model, normalizeReasoningContext(context), options)),
-  streamSimple: (model, context, options) =>
-    sanitizeStream(baseApi.streamSimple(model, normalizeReasoningContext(context), options)),
+  stream: (model, context, options) => {
+    const explicitReasoning = isRecord(options) ? options.reasoningEffort : undefined
+    return sanitizeStream(baseApi.stream(model, normalizeReasoningContext(context), withPayloadSanitization(options, explicitReasoning)))
+  },
+  streamSimple: (model, context, options) => {
+    const explicitReasoning = options?.reasoning
+    return sanitizeStream(baseApi.streamSimple(model, normalizeReasoningContext(context), withPayloadSanitization(options, explicitReasoning)))
+  },
 }
 
 export async function apply(ctx: Context, config: Config): Promise<void> {

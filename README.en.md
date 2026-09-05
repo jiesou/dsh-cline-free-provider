@@ -6,7 +6,7 @@ Cline Free provider for dsh.
 
 <img height="650" alt="截图 2026-08-17 10-39-41" src="https://github.com/user-attachments/assets/849c8ca8-2f97-4603-898a-37598a2dede5" />
 
-Cline provides a range of free models available through OpenRouter, as well as DeepSeek V4 Flash. This plugin dynamically filters Cline's model catalog for free models and makes them available in DSH.
+Cline provides a range of free models available through OpenRouter, as well as DeepSeek V4 Flash and GLM 5.3 Flash. This plugin dynamically filters Cline's model catalog for free models and makes them available in DSH.
 
 If you use a Cline Pass subscription, follow Cline's official documentation to configure the official API and API key directly. This plugin is not needed.
 
