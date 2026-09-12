@@ -23,6 +23,7 @@ const AUTH_ERROR_TYPES = new Set(['AuthError', 'authentication_error', 'invalid_
 const EXTRA_FREE_MODELS: Readonly<Record<string, string>> = {
   'deepseek/deepseek-v4-flash': 'DeepSeek V4 Flash (free)',
   'z-ai/glm-5.3-flash': 'GLM 5.3 Flash (free)',
+  'meta/muse-spark-1.3': 'Muse Spark 1.3 (free)',
 }
 
 interface ReasoningMetadata {
