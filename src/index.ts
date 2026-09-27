@@ -5,7 +5,8 @@ import { PiAiAdapter, type ResolvedPiAiProviderProfile } from '@deepseek-ai/dsh-
 import { credentialRef } from '@deepseek-ai/dsh-credentials'
 import { launchEnvironmentOf } from '@deepseek-ai/dsh-launch-environment'
 import { deepEqualJson } from '@deepseek-ai/dsh-util-values'
-import type {} from '@deepseek-ai/dsh-settings'
+// Augments Context with `fiber.entry` and the `loader/volatile-update` event.
+import type {} from '@deepseek-ai/cordis-plugin-loader'
 import z from '@deepseek-ai/schemastery'
 import { createProvider, type AuthContext, type Context as PiContext, type CredentialStore, type Model, type ProviderStreams, type ThinkingLevelMap } from '@earendil-works/pi-ai'
 import { openAICompletionsApi } from '@earendil-works/pi-ai/api/openai-completions.lazy'
@@ -13,7 +14,6 @@ import { openAICompletionsApi } from '@earendil-works/pi-ai/api/openai-completio
 export const name = 'cline-free-provider'
 export const inject = ['llm']
 
-const NS = 'cline-free-provider'
 const PROVIDER = 'cline'
 const DISPLAY_NAME = 'Cline'
 
@@ -55,13 +55,34 @@ export interface Config {
   retryPolicy?: RetryPolicyConfig
 }
 
-export const Config: z<Config> = z.object({
-  apiKeyEnv: z.string().role('credential-ref').default('CLINE_API_KEY'),
-  baseURL: z.string().default('https://api.cline.bot/api/v1'),
-  defaultMaxTokens: z.number().step(1).min(1).default(32_768),
-  defaultContextWindow: z.number().step(1).min(1).default(262_144),
-  retryPolicy: RetryPolicySchema,
+export const Config = z.object({
+  apiKeyEnv: z.string().role('credential-ref').default('CLINE_API_KEY').volatile(),
+  baseURL: z.string().default('https://api.cline.bot/api/v1').volatile(),
+  defaultMaxTokens: z.number().step(1).min(1).default(32_768).volatile(),
+  defaultContextWindow: z.number().step(1).min(1).default(262_144).volatile(),
+  retryPolicy: RetryPolicySchema.volatile(),
 })
+
+/**
+ * {@link Config} as the Loader holds it: every field is volatile, so a settings write
+ * reaches the running plugin as a committed reference instead of remounting it, and
+ * the field is one the settings service shows a form for.
+ */
+type LiveConfig = Schemastery.TypeT<typeof Config>
+
+/**
+ * The committed configuration as plain mutable values. Unwrapping the references
+ * yields immutable snapshots; cloning is what makes them workable again.
+ */
+function liveConfig(config: LiveConfig): Config {
+  return structuredClone({
+    apiKeyEnv: config.apiKeyEnv.get(),
+    baseURL: config.baseURL.get(),
+    defaultMaxTokens: config.defaultMaxTokens.get(),
+    defaultContextWindow: config.defaultContextWindow.get(),
+    retryPolicy: config.retryPolicy.get(),
+  }) as Config
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -178,7 +199,6 @@ function buildModels(scanned: readonly ClineModel[], baseURL: string, config: Co
       provider: PROVIDER,
       baseUrl: baseURL,
       headers: {
-        'User-Agent': 'Cline/3.0.47',
         'HTTP-Referer': 'https://cline.bot',
         'X-Title': 'Cline',
         'X-IS-MULTIROOT': 'false',
@@ -298,27 +318,60 @@ function withPayloadSanitization<T extends { onPayload?: (payload: unknown, mode
   } as T
 }
 
+/** Cline client identity the free tier expects. */
+const CLINE_USER_AGENT = 'Cline/3.0.47'
+
+/**
+ * Force the Cline client `user-agent` at the fetch layer. The harness merges
+ * its own attribution header after `model.headers`, so a header set there never
+ * reaches the wire; the fetch layer is the only position that still wins. Scoped
+ * to the configured endpoint and composed with any caller-provided fetch.
+ */
+const clineFetchWithUserAgent = (baseUrl: string, inner?: typeof globalThis.fetch): typeof globalThis.fetch => {
+  let host: string | undefined
+  try {
+    host = new URL(baseUrl).host
+  } catch {
+    host = undefined
+  }
+  const native = inner ?? globalThis.fetch
+  if (host === undefined) return native
+  return (input, init) => {
+    const url = typeof input === 'string'
+      ? input
+      : input instanceof URL ? input.href : input instanceof Request ? input.url : String(input)
+    if (!url.includes(host)) return native(input, init)
+    const headers = new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined))
+    headers.set('user-agent', CLINE_USER_AGENT)
+    return native(input, { ...init, headers })
+  }
+}
+
 const baseApi = openAICompletionsApi()
 const api: ProviderStreams = {
   stream: (model, context, options) => {
     const explicitReasoning = isRecord(options) ? options.reasoningEffort : undefined
-    return sanitizeStream(baseApi.stream(model, normalizeReasoningContext(context), withPayloadSanitization(options, explicitReasoning)))
+    const streamOptions = { ...options, fetch: clineFetchWithUserAgent(model.baseUrl, options?.fetch) }
+    return sanitizeStream(baseApi.stream(model, normalizeReasoningContext(context), withPayloadSanitization(streamOptions, explicitReasoning)))
   },
   streamSimple: (model, context, options) => {
     const explicitReasoning = options?.reasoning
-    return sanitizeStream(baseApi.streamSimple(model, normalizeReasoningContext(context), withPayloadSanitization(options, explicitReasoning)))
+    const streamOptions = { ...options, fetch: clineFetchWithUserAgent(model.baseUrl, options?.fetch) }
+    return sanitizeStream(baseApi.streamSimple(model, normalizeReasoningContext(context), withPayloadSanitization(streamOptions, explicitReasoning)))
   },
 }
 
-export async function apply(ctx: Context, config: Config): Promise<void> {
-  let current: () => Config = () => config
-
+export async function apply(ctx: Context, config: LiveConfig): Promise<void> {
   // Outside the settings-backed config, so a settings snapshot cannot clobber a
   // scan.
+  // The Loader owns the settings namespace, so the configuration form is
+  // addressed by the profile entry id that mounted this plugin.
+  const settingsNs = ctx.fiber.entry?.options.id ?? name
+
   let scanned: ClineModel[] = []
 
   const buildProfiles = (): ReadonlyMap<string, ResolvedPiAiProviderProfile> => {
-    const opts = current()
+    const opts = liveConfig(config)
     const baseURL = opts.baseURL ?? 'https://api.cline.bot/api/v1'
     const piProvider = createProvider({
       id: PROVIDER,
@@ -387,19 +440,14 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
   })
 
   ctx.llm.registerConfigurableProviders([
-    { provider: PROVIDER, displayName: DISPLAY_NAME, settingsNs: NS, settingsPath: [] },
+    { provider: PROVIDER, displayName: DISPLAY_NAME, settingsNs, settingsPath: [] },
   ])
   ctx.llm.registerAdapter([PROVIDER], adapter)
 
-  ctx.inject(['settings'], (settingsCtx) => {
-    settingsCtx.settings.installSection(ctx, NS, Config, config, {
-      setSource: (source) => {
-        current = source
-      },
-      onChange: () => {
-        profiles = buildProfiles()
-      },
-    })
+  // Every field is volatile, so the Loader commits a settings write into this
+  // fiber and announces it here instead of remounting; re-derive the profiles.
+  ctx.on('loader/volatile-update', () => {
+    profiles = buildProfiles()
   })
 
   // The catalog is fetched once at mount. Mount never awaits it: an unreachable

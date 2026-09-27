@@ -29,8 +29,26 @@ export interface Config {
     /** Provider-owned model-request retry policy; omission uses normal defaults. */
     retryPolicy?: RetryPolicyConfig;
 }
-export declare const Config: z<Config>;
+export declare const Config: z<Schemastery.ObjectS<NoInfer<{
+    apiKeyEnv: z<string, string, "volatile-defined">;
+    baseURL: z<string, string, "volatile-defined">;
+    defaultMaxTokens: z<number, number, "volatile-defined">;
+    defaultContextWindow: z<number, number, "volatile-defined">;
+    retryPolicy: z<NoInfer<RetryPolicyConfig>, NoInfer<RetryPolicyConfig>, "volatile">;
+}>>, Schemastery.ObjectT<NoInfer<{
+    apiKeyEnv: z<string, string, "volatile-defined">;
+    baseURL: z<string, string, "volatile-defined">;
+    defaultMaxTokens: z<number, number, "volatile-defined">;
+    defaultContextWindow: z<number, number, "volatile-defined">;
+    retryPolicy: z<NoInfer<RetryPolicyConfig>, NoInfer<RetryPolicyConfig>, "volatile">;
+}>>, "plain">;
+/**
+ * {@link Config} as the Loader holds it: every field is volatile, so a settings write
+ * reaches the running plugin as a committed reference instead of remounting it, and
+ * the field is one the settings service shows a form for.
+ */
+type LiveConfig = Schemastery.TypeT<typeof Config>;
 export declare function fetchFreeModels(url?: string, fetchImpl?: typeof fetch): Promise<ClineModel[]>;
 export declare function fetchOpenRouterReasoning(url?: string, fetchImpl?: typeof fetch): Promise<Map<string, ReasoningMetadata>>;
-export declare function apply(ctx: Context, config: Config): Promise<void>;
+export declare function apply(ctx: Context, config: LiveConfig): Promise<void>;
 export {};
