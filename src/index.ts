@@ -8,7 +8,7 @@ import { deepEqualJson } from '@deepseek-ai/dsh-util-values'
 // Augments Context with `fiber.entry` and the `loader/volatile-update` event.
 import type {} from '@deepseek-ai/cordis-plugin-loader'
 import z from '@deepseek-ai/schemastery'
-import { createProvider, type AuthContext, type Context as PiContext, type CredentialStore, type Model, type ProviderStreams, type ThinkingLevelMap } from '@earendil-works/pi-ai'
+import { createProvider, type AuthContext, type TranscriptContext, type CredentialStore, type Model, type ProviderStreams, type ThinkingLevelMap } from '@earendil-works/pi-ai'
 import { openAICompletionsApi } from '@earendil-works/pi-ai/api/openai-completions.lazy'
 
 export const name = 'cline-free-provider'
@@ -226,7 +226,7 @@ function buildModels(scanned: readonly ClineModel[], baseURL: string, config: Co
 // Replayed thinking blocks carry no wire signature; marking them
 // `reasoning_content` keeps the transport from mangling history. Never gated on
 // `model.reasoning`: a model with no effort control still streams thinking.
-const normalizeReasoningContext = (context: PiContext): PiContext => ({
+const normalizeReasoningContext = (context: TranscriptContext): TranscriptContext => ({
   ...context,
   messages: context.messages.map(message => message.role !== 'assistant' ? message : {
     ...message,
