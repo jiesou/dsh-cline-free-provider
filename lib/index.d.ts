@@ -48,7 +48,14 @@ export declare const Config: z<Schemastery.ObjectS<NoInfer<{
  * the field is one the settings service shows a form for.
  */
 type LiveConfig = Schemastery.TypeT<typeof Config>;
-export declare function fetchFreeModels(url?: string, fetchImpl?: typeof fetch): Promise<ClineModel[]>;
+export declare function fetchFreeModels(url?: string, fetchImpl?: typeof fetch, freeBucketIds?: ReadonlySet<string>): Promise<ClineModel[]>;
+/**
+ * Cline's own free-tier designation, straight from the feed the Cline client
+ * uses to tag FREE in its model picker (and the CLI uses to zero billing).
+ * The catalog feed's `pricing` field is the upstream market price and does
+ * not reflect this list, which rotates.
+ */
+export declare function fetchFreeModelIds(url?: string, fetchImpl?: typeof fetch): Promise<Set<string>>;
 export declare function fetchOpenRouterReasoning(url?: string, fetchImpl?: typeof fetch): Promise<Map<string, ReasoningMetadata>>;
 export declare function apply(ctx: Context, config: LiveConfig): Promise<void>;
 export {};
