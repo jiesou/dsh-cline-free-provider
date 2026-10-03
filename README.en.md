@@ -42,6 +42,8 @@ All optional, defaults work out of the box:
     baseURL: https://api.cline.bot/api/v1
     defaultMaxTokens: 32768
     defaultContextWindow: 262144
+    maxRequestImageBytes: 2097152
+    requestImageMaxBytes: 1048576
 ```
 
 | Key | Type | Default | Description |
@@ -50,6 +52,18 @@ All optional, defaults work out of the box:
 | `baseURL` | `string` | `"https://api.cline.bot/api/v1"` | Cline gateway base URL |
 | `defaultMaxTokens` | `number` | `32768` | Output cap fallback for models without an exact value |
 | `defaultContextWindow` | `number` | `262144` | Context capacity fallback for models without an exact value |
+| `maxRequestImageBytes` | `number` | `2097152` (2 MiB) | Inline base64 image budget for one request |
+| `requestImageMaxBytes` | `number` | `1048576` (1 MiB) | Per-image budget after re-encoding |
+
+## Images
+
+This wire is stateless: every request re-sends the history, so every image left in context is uploaded again on every turn.
+
+- Each image is normalized first: a 2048×2048 pixel budget, then re-encoded to fit `requestImageMaxBytes` (1 MiB by default).
+- When the inline base64 images of one request exceed `maxRequestImageBytes` (2 MiB by default), no request is sent; the adapter throws `IMAGE_OFFLOAD_REQUIRED` naming how many occurrences must be offloaded. DSH records the **oldest** ones in an `image/offload` event and retries; from then on their bytes are replaced by placeholder text that still names the image identity and a readable path.
+- Already-offloaded images are never read, re-encoded, or uploaded again.
+
+Both values count base64 characters (about 4/3 of the raw bytes). The default pair holds one full-size image plus one half-size image; lower both to save more bandwidth, but keep `maxRequestImageBytes` above one image's base64 length (a 1 MiB image is ~1.4 MB), or not even one image fits.
 
 ## Model catalog & reasoning effort
 

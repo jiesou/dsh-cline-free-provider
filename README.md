@@ -46,6 +46,8 @@ Cline 的 API Key 通过 DSH credentials 服务保存（变量名为 `CLINE_API_
     baseURL: https://api.cline.bot/api/v1
     defaultMaxTokens: 32768
     defaultContextWindow: 262144
+    maxRequestImageBytes: 2097152
+    requestImageMaxBytes: 1048576
 ```
 
 | 配置项 | 类型 | 默认值 | 说明 |
@@ -54,6 +56,18 @@ Cline 的 API Key 通过 DSH credentials 服务保存（变量名为 `CLINE_API_
 | `baseURL` | `string` | `"https://api.cline.bot/api/v1"` | Cline 网关 base URL |
 | `defaultMaxTokens` | `number` | `32768` | 模型无精确 maxTokens 时的兜底值 |
 | `defaultContextWindow` | `number` | `262144` | 模型无精确 contextWindow 时的兜底值 |
+| `maxRequestImageBytes` | `number` | `2097152`（2 MiB） | 单次请求允许内联的 base64 图片字节上限 |
+| `requestImageMaxBytes` | `number` | `1048576`（1 MiB） | 单张图片重编码后的字节上限 |
+
+## 图片
+
+Cline 这条线是无状态的：每轮请求都要把历史重新发一遍，所以留在上下文里的图片每轮都会再传一次。
+
+- 每张图片先归一化：2048×2048 像素总预算，再重编码到 `requestImageMaxBytes`（默认 1 MiB）以内。
+- 一轮请求内联的 base64 图片总量超过 `maxRequestImageBytes`（默认 2 MiB）时，不发请求，而是抛出 `IMAGE_OFFLOAD_REQUIRED` 并报出需要 offload 的张数。DSH 据此把**最旧**的图片记入 `image/offload` 事件并重试；之后每轮都用占位文本代替这些图片的字节，模型仍能从占位文本里读到图片身份和可读路径。
+- 已经 offload 的图片不再读取字节、不再编码、不再上传。
+
+两个值都是 base64 口径（比原图字节大约 4/3）。默认组合约等于"1 张整尺寸图 + 1 张半尺寸图"；想更省流量就一起调小，但 `maxRequestImageBytes` 必须大于 `requestImageMaxBytes` 的 base64 长度（1 MiB 图约 1.4 MB），否则一张图也放不下。
 
 ## 模型目录与推理档位
 

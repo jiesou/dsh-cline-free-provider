@@ -26,6 +26,10 @@ export interface Config {
     baseURL?: string;
     defaultMaxTokens?: number;
     defaultContextWindow?: number;
+    /** Base64 image payload one request accepts before older images are offloaded (default 2 MiB). */
+    maxRequestImageBytes?: number;
+    /** Per-image request budget after re-encoding (default 1 MiB). */
+    requestImageMaxBytes?: number;
     /** Provider-owned model-request retry policy; omission uses normal defaults. */
     retryPolicy?: RetryPolicyConfig;
 }
@@ -34,12 +38,16 @@ export declare const Config: z<Schemastery.ObjectS<NoInfer<{
     baseURL: z<string, string, "volatile-defined">;
     defaultMaxTokens: z<number, number, "volatile-defined">;
     defaultContextWindow: z<number, number, "volatile-defined">;
+    maxRequestImageBytes: z<number, number, "volatile-defined">;
+    requestImageMaxBytes: z<number, number, "volatile-defined">;
     retryPolicy: z<NoInfer<RetryPolicyConfig>, NoInfer<RetryPolicyConfig>, "volatile">;
 }>>, Schemastery.ObjectT<NoInfer<{
     apiKeyEnv: z<string, string, "volatile-defined">;
     baseURL: z<string, string, "volatile-defined">;
     defaultMaxTokens: z<number, number, "volatile-defined">;
     defaultContextWindow: z<number, number, "volatile-defined">;
+    maxRequestImageBytes: z<number, number, "volatile-defined">;
+    requestImageMaxBytes: z<number, number, "volatile-defined">;
     retryPolicy: z<NoInfer<RetryPolicyConfig>, NoInfer<RetryPolicyConfig>, "volatile">;
 }>>, "plain">;
 /**
